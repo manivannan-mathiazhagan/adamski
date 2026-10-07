@@ -246,7 +246,7 @@
 
 ~~~sas
 
-## Test 1: AFTER + self join + character flag
+**Test 1: AFTER + self join + character flag;
 
 data adrs;
     length USUBJID $3 PARAMCD $8 AVALC $2 ANL01FL $1;
@@ -286,8 +286,7 @@ run;
 );
 
 
-## Test 2: BEFORE + self join + numeric flag
-
+**Test 2: BEFORE + self join + numeric flag;
 data adex;
     length USUBJID $3 ANL01FL $1;
 
@@ -324,7 +323,7 @@ run;
 );
 
 
-## Test 3: ALL + separate dataset + multiple BY variables
+**Test 3: ALL + separate dataset + multiple BY variables;
 
 data adrs_base;
     length USUBJID $3 PARAMCD $8 AVALC $2;
@@ -379,7 +378,7 @@ run;
 );
 
 
-## Test 4: Multiple ORDER variables
+**Test 4: Multiple ORDER variables;
 
 data adtest;
     length USUBJID $3 ANL01FL $1;
@@ -419,7 +418,7 @@ run;
 );
 
 
-## Test 5: ALL self join - current observation must not match itself
+**Test 5: ALL self join - current observation must not match itself;
 
 data selftest;
     length USUBJID $3 AVALC $2;
