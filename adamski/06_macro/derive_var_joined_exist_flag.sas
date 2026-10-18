@@ -118,33 +118,30 @@ Parameters:
     - `outdata` (optional) :
         Output dataset.
         If not specified, the input dataset is overwritten.
-R alignment additions:
-    - `tmp_obs_nr_var` (optional):
-        R-equivalent temporary observation-number parameter. Further logic is
-        required when conditions explicitly reference the temporary number.
-    - `join_vars` (optional):
-        R-equivalent list of variables required from the joined observation.
-        Joined variables should be referenced using the SAS `_JOIN` suffix
-        instead of R's `.join` suffix.
-    - `first_cond_lower` (optional):
-        R-equivalent lower boundary condition. SAS expression syntax is used.
-    - `first_cond_upper` (optional):
-        R-equivalent upper boundary condition. SAS expression syntax is used.
-    - `filter_add` (optional):
-        Replaces the former SAS `join_cond`; filters DATASET_ADD before joining.
-    - `filter_join` (optional):
-        R-equivalent joined-record condition. Unlike the former CURRENT_COND,
-        the intended R behavior may reference both current and joined records.
-        R grouped helper expressions cannot be passed directly as SAS syntax.
-    - `check_type` (optional):
-        R-equivalent duplicate-check handling. Permitted values are MESSAGE,
-        WARNING, ERROR and NONE. Default is WARNING.
-    - SAS-only parameters: `value_type`, `new_var_length`, and `outdata`.
-        These do not exist in the R function and are retained for SAS-specific
-        type/length/output handling.
+R alignment:
+    - The following Admiral R parameters are intentionally excluded from
+      the SAS macro signature because their functionality is not implemented:
+        tmp_obs_nr_var, join_vars, first_cond_lower, first_cond_upper,
+        check_type.
+    - tmp_obs_nr_var: R supports order-based temporary observation numbers
+      for conditions; SAS currently creates internal row identifiers only.
+    - join_vars: R selects joined-record variables and exposes them with
+      the .join suffix; this SAS implementation does not expose joined
+      variables for use in conditions.
+    - first_cond_lower / first_cond_upper: R restricts the join to a
+      condition-defined range; these range boundaries are not implemented.
+    - check_type: R controls duplicate BY/ORDER diagnostics; configurable
+      duplicate checks are not implemented in this SAS macro.
+    - filter_add and filter_join are implemented with SAS-specific semantics:
+      filter_add filters DATASET_ADD; filter_join filters DATASET before
+      joining. Unlike Admiral R, filter_join cannot reference both records
+      or use R grouped summary functions.
+    - SAS-only parameters value_type, new_var_length, and outdata are
+      retained for SAS-specific type, length, and output handling.
 Notes:
     - Conditions are applied before the SQL join to reduce the number of
-      observation combinations processed.
+      observation combinations processed. This is not identical to the
+      joined-record filter semantics of the Admiral R function.
     - `by_vars` are used only to determine which observations belong to
       the same group.
     - `filter_join` applies only to observations from `dataset`.
@@ -201,7 +198,7 @@ run;
     new_var      = CONFFL,
     join_type    = after,
     filter_join = AVALC = "Y" and ANL01FL = "Y",
-    filter_add    = AVALC = "Y" and ANL01FL = "Y",
+    filter_add  = AVALC = "Y" and ANL01FL = "Y",
     true_value   = Y,
     false_value  = ,
     outdata      = adrs_out
@@ -343,7 +340,7 @@ URL:
 https://github.com/PharmaForest/adamski
 ---
 Author:                     Manivannan Mathialagan
-Latest update Date:         2026-10-10
+Latest update Date:         2026-10-18
 ---
 */
 /*** HELP END ***/
@@ -353,16 +350,11 @@ Latest update Date:         2026-10-10
     by_vars          = ,
     order            = ,
     new_var          = ,
-    tmp_obs_nr_var   = ,
-    join_vars        = ,
     join_type        = all,
-    first_cond_lower = ,
-    first_cond_upper = ,
     filter_add       = ,
     filter_join      = ,
     true_value       = Y,
     false_value      = ,
-    check_type       = warning,
     value_type       = C,
     new_var_length   = 1,
     outdata          =
