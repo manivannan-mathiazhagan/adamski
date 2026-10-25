@@ -8,8 +8,9 @@ Purpose:
     The macro compares observations from an input dataset with observations
     from an additional dataset. The additional dataset may be the same as
     the input dataset.
-    Current and joined observations can be filtered independently before
-    the join is performed.
+    FILTER_ADD restricts additional observations before joining.
+    FILTER_JOIN evaluates the current and joined observations together
+    after joining, including variables referenced using the .join suffix.
     The macro can search:
         - observations before the current observation
         - observations after the current observation
@@ -80,11 +81,17 @@ Parameters:
         `all`:
             All other observations in the same BY group are considered.
     - `filter_join` (optional) :
-        SAS SQL condition applied to the current/input observations
-        before the join is performed.
-        Variable names should be specified normally without table aliases.
+        SAS SQL condition evaluated on each current/joined observation pair.
+        Current-record variables use their ordinary names; joined-record
+        variables listed in JOIN_VARS use the .join suffix.
         Example:
-            filter_join = AVALC = "Y" and ANL01FL = "Y"
+            filter_join = ADURN > 30 and ACOVFL.join = "Y"
+                          and ADY.join <= ADY + 7
+    - `join_vars` (optional) :
+        Space-separated list of variables from DATASET_ADD that FILTER_JOIN
+        references using the .join suffix. These variables must exist in
+        DATASET_ADD. Example:
+            join_vars = ACOVFL ADY
     - `filter_add` (optional) :
         SAS SQL condition applied to observations from `dataset_add`
         before the join is performed.
@@ -119,32 +126,39 @@ Parameters:
         Output dataset.
         If not specified, the input dataset is overwritten.
 R alignment:
-    - The following Admiral R parameters are intentionally excluded from
-      the SAS macro signature because their functionality is not implemented:
-        tmp_obs_nr_var, join_vars, first_cond_lower, first_cond_upper,
-        check_type.
+    - The following Admiral R parameters are not implemented:
+        tmp_obs_nr_var, first_cond_lower, first_cond_upper, check_type.
     - tmp_obs_nr_var: R supports order-based temporary observation numbers
       for conditions; SAS currently creates internal row identifiers only.
-    - join_vars: R selects joined-record variables and exposes them with
-      the .join suffix; this SAS implementation does not expose joined
-      variables for use in conditions.
+    - join_vars: Joined-record variables can be referenced with the .join
+      suffix in FILTER_JOIN, as in Admiral R. This SAS macro translates
+      those references to temporary SAS variable names.
     - first_cond_lower / first_cond_upper: R restricts the join to a
       condition-defined range; these range boundaries are not implemented.
     - check_type: R controls duplicate BY/ORDER diagnostics; configurable
       duplicate checks are not implemented in this SAS macro.
-    - filter_add and filter_join are implemented with SAS-specific semantics:
-      filter_add filters DATASET_ADD; filter_join filters DATASET before
-      joining. Unlike Admiral R, filter_join cannot reference both records
-      or use R grouped summary functions.
-    - SAS-only parameters value_type, new_var_length, and outdata are
-      retained for SAS-specific type, length, and output handling.
+    - filter_add filters DATASET_ADD before joining; filter_join evaluates
+      the current and joined records together. R-specific grouped summary
+      functions and range-boundary options are not implemented.
+    - value_type (SAS-specific parameter): This parameter was introduced 
+      in the SAS implementation to explicitly control whether the derived 
+      flag variable is character (C) or numeric (N). Unlike R, where the 
+      output variable type can be inferred from the supplied values, SAS 
+      requires the variable type to be established during DATA step 
+      compilation. The parameter ensures that true_value and false_value 
+      are assigned using the intended SAS variable type, avoiding 
+      unintended type conversion or mismatches. This is an 
+      implementation-specific addition and does not change the derivation 
+      logic or intended alignment with the R function.
+    - new_var_length: Sets the SAS character flag length.
+    - outdata: Allows the output to be written to a separate SAS dataset.
 Notes:
-    - Conditions are applied before the SQL join to reduce the number of
-      observation combinations processed. This is not identical to the
-      joined-record filter semantics of the Admiral R function.
+    - FILTER_ADD is applied before joining; FILTER_JOIN is evaluated
+      after the join, against each current/joined observation pair.
     - `by_vars` are used only to determine which observations belong to
       the same group.
-    - `filter_join` applies only to observations from `dataset`.
+    - `filter_join` can reference current observations and JOIN_VARS from
+      `dataset_add` using the .join suffix.
     - `filter_add` applies only to observations from `dataset_add`.
     - `join_type=before` and `join_type=after` require `order`.
     - When `dataset_add` is the same dataset as `dataset`, the current
@@ -168,6 +182,10 @@ Notes:
     - If `new_var` already exists, it is overwritten in the output dataset.
     - Macro quoting may be required when `filter_join` or `filter_add`
       contains commas.
+    - JOIN_VARS must be simple SAS variable names of at most 27 characters
+      so the temporary _join suffix fits the SAS 32-character name limit.
+    - Do not use input variable names ending in _join for JOIN_VARS, or
+      reference joined variables without the .join suffix.
 Sample code:
 ~~~sas
 * Test 1: AFTER + self join + character flag ;
@@ -351,6 +369,7 @@ Latest update Date:         2026-10-18
     order            = ,
     new_var          = ,
     join_type        = all,
+    join_vars        = ,
     filter_add       = ,
     filter_join      = ,
     true_value       = Y,
@@ -359,16 +378,17 @@ Latest update Date:         2026-10-18
     new_var_length   = 1,
     outdata          =
 );
-%local _error _dsid_a _dsid_b _rc _join_type _value_type _nby _norder _i _j _var _varnum_a _varnum_b _vartype_a _vartype_b _by_condition _order_condition _prefix_equal _src _add _src_filtered _add_filtered _src_final _matched _result _new_var_num _lib_a _lib_b _mem_a _mem_b _same_dataset;
+%local _error _dsid_a _dsid_b _rc _join_type _value_type _nby _norder _i _j _var _varnum_a _varnum_b _vartype_a _vartype_b _by_condition _order_condition _prefix_equal _src _add _src_filtered _add_filtered _src_final _matched _result _new_var_num _lib_a _lib_b _mem_a _mem_b _same_dataset _njoin _join_var _join_filter _join_select _joined _join_name _join_num _src_join_num;
     %let _error = 0;
     /* Temporary dataset names */
-    %let _src          = work._adsk_jef_src;
-    %let _add          = work._adsk_jef_add;
+    %let _src = work._adsk_jef_src;
+    %let _add = work._adsk_jef_add;
     %let _src_filtered = work._adsk_jef_srcf;
     %let _add_filtered = work._adsk_jef_addf;
-    %let _src_final    = work._adsk_jef_srcfinal;
-    %let _matched      = work._adsk_jef_match;
-    %let _result       = work._adsk_jef_result;
+    %let _src_final = work._adsk_jef_srcfinal;
+    %let _matched = work._adsk_jef_match;
+    %let _joined = work._adsk_jef_joined;
+    %let _result = work._adsk_jef_result;
     /* Check required parameters */
     %if %superq(dataset) = %then
     %do;
@@ -401,7 +421,7 @@ Latest update Date:         2026-10-18
         %let outdata = &dataset;
     %end;
     /* Standardize parameter values */
-    %let _join_type  = %lowcase(%superq(join_type));
+    %let _join_type = %lowcase(%superq(join_type));
     %let _value_type = %upcase(%superq(value_type));
     /* Validate JOIN_TYPE */
     %if &_join_type ne before and
@@ -413,9 +433,7 @@ Latest update Date:         2026-10-18
         %let _error = 1;
     %end;
     /* Validate VALUE_TYPE */
-    %if &_value_type ne C and
-        &_value_type ne N
-    %then
+    %if &_value_type ne C and &_value_type ne N %then
     %do;
         %put ERROR: derive_var_joined_exist_flag: value_type must be C or N.;
         %let _error = 1;
@@ -423,11 +441,7 @@ Latest update Date:         2026-10-18
     /* Validate character flag length */
     %if &_value_type = C %then
     %do;
-        %if %sysevalf(
-                %superq(new_var_length) = ,
-                boolean
-            )
-        %then
+        %if %sysevalf(%superq(new_var_length) = , boolean) %then
         %do;
             %put ERROR: derive_var_joined_exist_flag: new_var_length must be specified for a character flag.;
             %let _error = 1;
@@ -491,22 +505,8 @@ Latest update Date:         2026-10-18
     %let _mem_b = ;
     %if %index(%superq(dataset), .) > 0 %then
     %do;
-        %let _lib_a =
-            %upcase(
-                %scan(
-                    %superq(dataset),
-                    1,
-                    .
-                )
-            );
-        %let _mem_a =
-            %upcase(
-                %scan(
-                    %superq(dataset),
-                    **2**,
-                    .
-                )
-            );
+        %let _lib_a = %upcase( %scan( %superq(dataset), 1, . ) );
+        %let _mem_a = %upcase( %scan( %superq(dataset), 2, . ) );
     %end;
     %else
     %do;
@@ -515,22 +515,8 @@ Latest update Date:         2026-10-18
     %end;
     %if %index(%superq(dataset_add), .) > 0 %then
     %do;
-        %let _lib_b =
-            %upcase(
-                %scan(
-                    %superq(dataset_add),
-                    1,
-                    .
-                )
-            );
-        %let _mem_b =
-            %upcase(
-                %scan(
-                    %superq(dataset_add),
-                    **2**,
-                    .
-                )
-            );
+        %let _lib_b = %upcase( %scan( %superq(dataset_add), 1, . ) );
+        %let _mem_b = %upcase( %scan( %superq(dataset_add), 2, . ) );
     %end;
     %else
     %do;
@@ -538,41 +524,16 @@ Latest update Date:         2026-10-18
         %let _mem_b = %upcase(%superq(dataset_add));
     %end;
     %let _same_dataset = 0;
-    %if &_lib_a = &_lib_b and
-        &_mem_a = &_mem_b
-    %then
+    %if &_lib_a = &_lib_b and &_mem_a = &_mem_b %then
     %do;
         %let _same_dataset = 1;
     %end;
     /* Validate BY variables */
-    %let _nby =
-        %sysfunc(
-            countw(
-                %superq(by_vars),
-                %str( )
-            )
-        );
+    %let _nby = %sysfunc( countw( %superq(by_vars), %str( ) ) );
     %do _i = 1 %to &_nby;
-        %let _var =
-            %scan(
-                %superq(by_vars),
-                &_i,
-                %str( )
-            );
-        %let _varnum_a =
-            %sysfunc(
-                varnum(
-                    &_dsid_a,
-                    &_var
-                )
-            );
-        %let _varnum_b =
-            %sysfunc(
-                varnum(
-                    &_dsid_b,
-                    &_var
-                )
-            );
+        %let _var = %scan( %superq(by_vars), &_i, %str( ) );
+        %let _varnum_a = %sysfunc( varnum( &_dsid_a, &_var ) );
+        %let _varnum_b = %sysfunc( varnum( &_dsid_b, &_var ) );
         %if &_varnum_a = 0 %then
         %do;
             %put ERROR: derive_var_joined_exist_flag: BY variable &_var not found in &dataset..;
@@ -584,24 +545,10 @@ Latest update Date:         2026-10-18
             %let _error = 1;
         %end;
         /* Verify that BY variable types match. */
-        %if &_varnum_a > 0 and
-            &_varnum_b > 0
-        %then
+        %if &_varnum_a > 0 and &_varnum_b > 0 %then
         %do;
-            %let _vartype_a =
-                %sysfunc(
-                    vartype(
-                        &_dsid_a,
-                        &_varnum_a
-                    )
-                );
-            %let _vartype_b =
-                %sysfunc(
-                    vartype(
-                        &_dsid_b,
-                        &_varnum_b
-                    )
-                );
+            %let _vartype_a = %sysfunc( vartype( &_dsid_a, &_varnum_a ) );
+            %let _vartype_b = %sysfunc( vartype( &_dsid_b, &_varnum_b ) );
             %if &_vartype_a ne &_vartype_b %then
             %do;
                 %put ERROR: derive_var_joined_exist_flag: BY variable &_var has different types in &dataset and &dataset_add..;
@@ -612,34 +559,11 @@ Latest update Date:         2026-10-18
     /* Validate ORDER variables */
     %if %superq(order) ne %then
     %do;
-        %let _norder =
-            %sysfunc(
-                countw(
-                    %superq(order),
-                    %str( )
-                )
-            );
+        %let _norder = %sysfunc( countw( %superq(order), %str( ) ) );
         %do _i = 1 %to &_norder;
-            %let _var =
-                %scan(
-                    %superq(order),
-                    &_i,
-                    %str( )
-                );
-            %let _varnum_a =
-                %sysfunc(
-                    varnum(
-                        &_dsid_a,
-                        &_var
-                    )
-                );
-            %let _varnum_b =
-                %sysfunc(
-                    varnum(
-                        &_dsid_b,
-                        &_var
-                    )
-                );
+            %let _var = %scan( %superq(order), &_i, %str( ) );
+            %let _varnum_a = %sysfunc( varnum( &_dsid_a, &_var ) );
+            %let _varnum_b = %sysfunc( varnum( &_dsid_b, &_var ) );
             %if &_varnum_a = 0 %then
             %do;
                 %put ERROR: derive_var_joined_exist_flag: ORDER variable &_var not found in &dataset..;
@@ -651,24 +575,10 @@ Latest update Date:         2026-10-18
                 %let _error = 1;
             %end;
             /* Verify that ORDER variable types match. */
-            %if &_varnum_a > 0 and
-                &_varnum_b > 0
-            %then
+            %if &_varnum_a > 0 and &_varnum_b > 0 %then
             %do;
-                %let _vartype_a =
-                    %sysfunc(
-                        vartype(
-                            &_dsid_a,
-                            &_varnum_a
-                        )
-                    );
-                %let _vartype_b =
-                    %sysfunc(
-                        vartype(
-                            &_dsid_b,
-                            &_varnum_b
-                        )
-                    );
+                %let _vartype_a = %sysfunc( vartype( &_dsid_a, &_varnum_a ) );
+                %let _vartype_b = %sysfunc( vartype( &_dsid_b, &_varnum_b ) );
                 %if &_vartype_a ne &_vartype_b %then
                 %do;
                     %put ERROR: derive_var_joined_exist_flag: ORDER variable &_var has different types in &dataset and &dataset_add..;
@@ -677,31 +587,38 @@ Latest update Date:         2026-10-18
             %end;
         %end;
     %end;
+    /* Validate JOIN_VARS and protect temporary joined variable names. */
+    %let _njoin = %sysfunc(countw(%superq(join_vars), %str( )));
+    %do _i = 1 %to &_njoin;
+        %let _join_var = %scan(%superq(join_vars), &_i, %str( ));
+        %let _join_name = &_join_var._join;
+        %let _join_num = %sysfunc(varnum(&_dsid_b, &_join_var));
+        %let _src_join_num = %sysfunc(varnum(&_dsid_a, &_join_name));
+
+        %if %length(&_join_var) > 27 or
+            %sysfunc(nvalid(&_join_var, V7)) = 0 %then %do;
+            %put ERROR: derive_var_joined_exist_flag: Invalid JOIN_VARS name &_join_var..;
+            %let _error = 1;
+        %end;
+        %if &_join_num = 0 %then %do;
+            %put ERROR: derive_var_joined_exist_flag: JOIN_VARS variable &_join_var not found in &dataset_add..;
+            %let _error = 1;
+        %end;
+        %if &_src_join_num > 0 %then %do;
+            %put ERROR: derive_var_joined_exist_flag: Temporary joined name &_join_name conflicts with an input variable.;
+            %let _error = 1;
+        %end;
+    %end;
+
     /* Check whether NEW_VAR already exists */
-    %let _new_var_num =
-        %sysfunc(
-            varnum(
-                &_dsid_a,
-                &new_var
-            )
-        );
+    %let _new_var_num = %sysfunc( varnum( &_dsid_a, &new_var ) );
     %if &_new_var_num > 0 %then
     %do;
         %put WARNING: derive_var_joined_exist_flag: Variable &new_var already exists in &dataset and will be overwritten.;
     %end;
     /* Close datasets */
-    %let _rc =
-        %sysfunc(
-            close(
-                &_dsid_a
-            )
-        );
-    %let _rc =
-        %sysfunc(
-            close(
-                &_dsid_b
-            )
-        );
+    %let _rc = %sysfunc( close( &_dsid_a ) );
+    %let _rc = %sysfunc( close( &_dsid_b ) );
     %if &_error = 1 %then
     %do;
         %put ERROR: derive_var_joined_exist_flag: Macro execution stopped due to invalid input variable(s).;
@@ -726,17 +643,11 @@ Latest update Date:         2026-10-18
         set &dataset_add;
         _adsk_add_obs_id = _n_;
     run;
-    /* Filter CURRENT observations before joining */
-    proc sql;
-        create table &_src_filtered as
-        select *
-        from &_src
-        %if %superq(filter_join) ne %then
-        %do;
-            where &filter_join
-        %end;
-        ;
-    quit;
+    /* All current records remain eligible until the pairwise join filter. */
+    data &_src_filtered;
+        set &_src;
+    run;
+
     /* Filter JOINED observations before joining */
     proc sql;
         create table &_add_filtered as
@@ -751,23 +662,14 @@ Latest update Date:         2026-10-18
     /* Build BY matching condition */
     %let _by_condition = ;
     %do _i = 1 %to &_nby;
-        %let _var =
-            %scan(
-                %superq(by_vars),
-                &_i,
-                %str( )
-            );
+        %let _var = %scan( %superq(by_vars), &_i, %str( ) );
         %if &_i = 1 %then
         %do;
-            %let _by_condition =
-                a.&_var = b.&_var;
+            %let _by_condition = a.&_var = b.&_var;
         %end;
         %else
         %do;
-            %let _by_condition =
-                &_by_condition
-                and
-                a.&_var = b.&_var;
+            %let _by_condition = &_by_condition and a.&_var = b.&_var;
         %end;
     %end;
     /* -----------------------------------------------------------------*/
@@ -786,9 +688,7 @@ Latest update Date:         2026-10-18
     /* BEFORE is constructed using the corresponding < comparisons.     */
     /*------------------------------------------------------------------*/
     %let _order_condition = ;
-    %if &_join_type = before or
-        &_join_type = after
-    %then
+    %if &_join_type = before or &_join_type = after %then
     %do;
         %do _i = 1 %to &_norder;
             %let _prefix_equal = ;
@@ -796,50 +696,28 @@ Latest update Date:         2026-10-18
             %if &_i > 1 %then
             %do;
                 %do _j = 1 %to %eval(&_i - 1);
-                    %let _var =
-                        %scan(
-                            %superq(order),
-                            &_j,
-                            %str( )
-                        );
+                    %let _var = %scan( %superq(order), &_j, %str( ) );
                     %if &_j = 1 %then
                     %do;
-                        %let _prefix_equal =
-                            b.&_var = a.&_var;
+                        %let _prefix_equal = b.&_var = a.&_var;
                     %end;
                     %else
                     %do;
-                        %let _prefix_equal =
-                            &_prefix_equal
-                            and
-                            b.&_var = a.&_var;
+                        %let _prefix_equal = &_prefix_equal and b.&_var = a.&_var;
                     %end;
                 %end;
             %end;
-            %let _var =
-                %scan(
-                    %superq(order),
-                    &_i,
-                    %str( )
-                );
+            %let _var = %scan( %superq(order), &_i, %str( ) );
             /* AFTER */
             %if &_join_type = after %then
             %do;
                 %if &_i = 1 %then
                 %do;
-                    %let _order_condition =
-                        (b.&_var > a.&_var);
+                    %let _order_condition = (b.&_var > a.&_var);
                 %end;
                 %else
                 %do;
-                    %let _order_condition =
-                        &_order_condition
-                        or
-                        (
-                            &_prefix_equal
-                            and
-                            b.&_var > a.&_var
-                        );
+                    %let _order_condition = &_order_condition or ( &_prefix_equal and b.&_var > a.&_var );
                 %end;
             %end;
             /* BEFORE */
@@ -847,58 +725,52 @@ Latest update Date:         2026-10-18
             %do;
                 %if &_i = 1 %then
                 %do;
-                    %let _order_condition =
-                        (b.&_var < a.&_var);
+                    %let _order_condition = (b.&_var < a.&_var);
                 %end;
                 %else
                 %do;
-                    %let _order_condition =
-                        &_order_condition
-                        or
-                        (
-                            &_prefix_equal
-                            and
-                            b.&_var < a.&_var
-                        );
+                    %let _order_condition = &_order_condition or ( &_prefix_equal and b.&_var < a.&_var );
                 %end;
             %end;
         %end;
     %end;
-    /* -----------------------------------------------------------------*/
-    /* Find CURRENT observations having at least one qualifying         */
-    /* joined observation.                                              */
-    /*                                                                  */
-    /* Only the original CURRENT observation identifier is retained.    */
-    /*                                                                  */      
-    /* When DATASET and DATASET_ADD are the same dataset, the same      */
-    /* physical observation is excluded from the join.                  */
-    /*------------------------------------------------------------------*/
+    /* Translate joined-variable references into SAS column names. */
+    %let _join_filter = %superq(filter_join);
+    %let _join_select = ;
+    %do _i = 1 %to &_njoin;
+        %let _join_var = %scan(%superq(join_vars), &_i, %str( ));
+        %let _join_select = &_join_select, b.&_join_var as &_join_var._join;
+        %let _join_filter = %sysfunc(tranwrd(%superq(_join_filter), &_join_var..join, &_join_var._join));
+        %let _join_filter = %sysfunc(tranwrd(%superq(_join_filter), &_join_var..JOIN, &_join_var._join));
+    %end;
+
+    /* Join current and additional observations within the BY group. */
     proc sql;
-        create table &_matched as
-        select distinct
-            a._adsk_obs_id
+        create table &_joined as
+        select a.* &_join_select
         from &_src_filtered as a
         inner join &_add_filtered as b
-            on
-                &_by_condition
-            /* Prevent self matching. */
-            %if &_same_dataset = 1 %then
-            %do;
-                and
-                    a._adsk_obs_id ne b._adsk_add_obs_id
+            on &_by_condition
+            %if &_same_dataset = 1 %then %do;
+                and a._adsk_obs_id ne b._adsk_add_obs_id
             %end;
-            /* Apply BEFORE / AFTER restriction. */
-            %if &_join_type = before or
-                &_join_type = after
-            %then
-            %do;
-                and
-                (
-                    &_order_condition
-                )
+            %if &_join_type = before or &_join_type = after %then %do;
+                and (&_order_condition)
             %end;
         ;
     quit;
+
+    /* Evaluate FILTER_JOIN on each current/joined observation pair. */
+    proc sql;
+        create table &_matched as
+        select distinct _adsk_obs_id
+        from &_joined
+        %if %superq(_join_filter) ne %then %do;
+            where %unquote(&_join_filter)
+        %end;
+        ;
+    quit;
+
     /* -----------------------------------------------------------------*/
     /* Create source used for final output.                             */
     /*                                                                  */          
@@ -973,6 +845,7 @@ Latest update Date:         2026-10-18
     proc datasets library = work nolist nowarn ;
         delete _adsk_jef_src _adsk_jef_add _adsk_jef_srcf _adsk_jef_addf
                _adsk_jef_srcfinal  _adsk_jef_match  _adsk_jef_result
+               _adsk_jef_joined
         ;
     quit;
     /* Completion message */
